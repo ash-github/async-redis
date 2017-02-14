@@ -1,6 +1,6 @@
 #pragma once
 
-#include <libevpp/network/async_socket.hpp>
+#include <async_redis/details/connector.hpp>
 #include <async_redis/parser/base_resp_parser.h>
 
 #include <unordered_map>
@@ -12,9 +12,9 @@ using namespace libevpp;
 
 namespace async_redis
 {
-  class monitor
+  class monitor : public details::connector<1024, monitor>
   {
-    using async_socket    = network::async_socket;
+    friend details::connector<1024, monitor>;
 
   public:
     enum EventState {
@@ -29,10 +29,6 @@ namespace async_redis
 
     monitor(event_loop::event_loop_ev &event_loop);
 
-    void connect(async_socket::connect_handler_t handler, const std::string& ip, int port);
-    void connect(async_socket::connect_handler_t handler, const std::string& path);
-
-    bool is_connected() const;
     bool is_watching() const;
     void disconnect();
 
@@ -52,17 +48,13 @@ namespace async_redis
     void handle_event(parser_t&& request);
     void report_disconnect();
 
-    void stream_received(ssize_t len);
+    void data_received(const char *data, ssize_t len);
 
   private:
     parser_t parser_;
     std::unordered_map<std::string, watcher_cb_t> watchers_;
     std::unordered_map<std::string, watcher_cb_t> pwatchers_;
 
-    std::unique_ptr<async_socket> socket_;
-    event_loop::event_loop_ev &io_;
-    enum { max_data_size = 1024 };
-    char data_[max_data_size];
     bool is_watching_ = false;
   };
 

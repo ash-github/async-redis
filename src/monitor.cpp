@@ -2,43 +2,21 @@
 
 #include <async_redis/parser/array_parser.h>
 #include <cassert>
-#include <libevpp/network/tcp_socket.hpp>
-#include <libevpp/network/unix_socket.hpp>
 
 namespace async_redis
 {
-using tcp_socket      = network::tcp_socket;
-using unix_socket     = network::unix_socket;
 
 monitor::monitor(event_loop::event_loop_ev &event_loop)
-  : io_(event_loop)
+  : connector(event_loop)
 {}
 
-void monitor::connect(async_socket::connect_handler_t handler, const std::string& ip, int port)
-{
-  if (!socket_ || !socket_->is_valid())
-    socket_ = std::make_unique<tcp_socket>(io_);
-
-  static_cast<tcp_socket*>(socket_.get())->async_connect(ip, port, handler);
-}
-
-void monitor::connect(async_socket::connect_handler_t handler, const std::string& path)
-{
-  if (!socket_ || !socket_->is_valid())
-    socket_ = std::make_unique<unix_socket>(io_);
-
-  static_cast<unix_socket*>(socket_.get())->async_connect(path, handler);
-}
-
-bool monitor::is_connected() const
-{ return socket_->is_connected(); }
 
 bool monitor::is_watching() const
 { return this->is_connected() && is_watching_; }
 
 void monitor::disconnect()
 {
-  socket_->close();
+  connector::disconnect();
 
   pwatchers_.clear();
   watchers_.clear();
@@ -103,20 +81,11 @@ bool monitor::send_and_receive(string&& data)
   if (!is_connected())
     return false;
 
-  socket_->async_write(data, [this](ssize_t sent_chunk_len) {
+  do_write(data, [this](ssize_t sent_chunk_len) {
     if (is_watching_)
       return;
 
-    this->socket_->async_read(
-      this->data_,
-      this->max_data_size,
-      std::bind(
-        &monitor::stream_received,
-        this,
-        std::placeholders::_1
-      )
-    );
-
+    do_read();
     this->is_watching_ = true;
   });
   return true;
@@ -217,7 +186,7 @@ void monitor::report_disconnect()
   disconnect();
 }
 
-void monitor::stream_received(ssize_t len)
+void monitor::data_received(const char* data, ssize_t len)
 {
   if (len == 0)
     return report_disconnect();
@@ -226,7 +195,7 @@ void monitor::stream_received(ssize_t len)
   while (acc < len)
   {
     bool is_finished = false;
-    acc += parser::base_resp_parser::append_chunk(parser_, data_ + acc, len - acc, is_finished);
+    acc += parser::base_resp_parser::append_chunk(parser_, data + acc, len - acc, is_finished);
 
     if (!is_finished)
       break;
@@ -244,15 +213,7 @@ void monitor::stream_received(ssize_t len)
     return;
   }
 
-  this->socket_->async_read(
-    this->data_,
-    this->max_data_size,
-    std::bind(
-      &monitor::stream_received,
-      this,
-      std::placeholders::_1
-    )
-  );
+  do_read();
 }
 
 }
